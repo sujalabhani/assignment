@@ -1,5 +1,7 @@
 import 'dart:convert';
-
+import 'dart:io';
+import 'package:assignment/components.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:assignment/model/version_control.dart';
 import 'package:flutter/material.dart';
@@ -21,33 +23,50 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = false;
   late final Box hiveBox;
   late ConnectivityResult connectivityResult;
+  late bool canCheckBiometrics;
   @override
   void initState() {
     super.initState();
     checkConnectivity();
-    WidgetsBinding.instance!.addPostFrameCallback((timeStamp) async {
-      hiveBox = await Hive.openBox('localData');
-
-      Connectivity().checkConnectivity().then((value) {
-        connectivityResult = value;
-        if (value == ConnectivityResult.none) {
-          if (hiveBox.isNotEmpty) {
-            parseJson(hiveBox.getAt(0) as String);
-            setState(() {});
-          }
-          showSnackBar('Connect To Internet To Get Latest Data');
-        }
-      });
-    });
   }
 
   Future checkConnectivity() async {
+    canCheckBiometrics = await LocalAuthentication().canCheckBiometrics;
+    if (!canCheckBiometrics) {
+      await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => const Alert(
+                message: 'No Fingerprint Set',
+              ));
+    }
+
+    bool didAuthenticate = await LocalAuthentication().authenticate(
+        localizedReason: 'Please Use FingerPrint to Open', biometricOnly: true);
+    if (!didAuthenticate) {
+      await showDialog(
+          barrierDismissible: false,
+          context: context,
+          builder: (_) => const Alert(message: 'Didn\'t Scan Fingerprint'));
+    }
+    hiveBox = await Hive.openBox('localData');
+    //connectivity check before loading data
+    Connectivity().checkConnectivity().then((value) {
+      connectivityResult = value;
+      if (value == ConnectivityResult.none) {
+        if (hiveBox.isNotEmpty) {
+          parseJson(hiveBox.getAt(0) as String);
+          setState(() {});
+        }
+        showSnackBar('Connect To Internet To Get Latest Data');
+      }
+    });
+    //connectivity check after opening app
     Connectivity().onConnectivityChanged.listen((event) async {
       connectivityResult = event;
       if (event != ConnectivityResult.none) {
-        showSnackBar('Connected to Internet');
-
         getData();
+        showSnackBar('Showing latest data from API');
       } else {
         if (hiveBox.isNotEmpty) {
           parseJson(hiveBox.get('jsonData') as String);
@@ -58,12 +77,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void showSnackBar(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 3),
+    ));
   }
 
   Future<void> getData() async {
     _loading = !_loading;
-    countOfRequest += 10;
+    countOfRequest += 15;
     final response = await httpClient.get(Uri.parse(
         'https://api.github.com/users/JakeWharton/repos?page=1&per_page=$countOfRequest'));
     parseJson(response.body);
@@ -78,9 +100,10 @@ class _HomeScreenState extends State<HomeScreen> {
       dataList
           .addAll(data.map((item) => VersionControl.fromJson(item)).toList());
     } else {
+      //filtering to avoid duplication if user turned on data after opening App
       List<VersionControl> filteredList =
           data.map((item) => VersionControl.fromJson(item)).toList();
-      filteredList.removeRange(0, dataList.length);
+      dataList.clear();
       dataList.addAll(filteredList);
     }
   }
@@ -92,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
           systemOverlayStyle: SystemUiOverlayStyle.light,
           title: const Text(
             'Assignment',
-            style: const TextStyle(color: Colors.white),
+            style: TextStyle(color: Colors.white),
           ),
         ),
         body: ListView.builder(
@@ -103,103 +126,18 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!_loading) {
                 getData();
               }
-
               return const Center(
                 child: CircularProgressIndicator(),
               );
             }
-            return Container(
-              padding: const EdgeInsets.only(bottom: 7, top: 3),
-              width: MediaQuery.of(context).size.width,
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 8.0),
-                        child: Icon(
-                          Icons.book_rounded,
-                          color: Colors.black,
-                          size: 50,
-                        ),
-                      ),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.start,
-                          children: [
-                            Text(
-                              dataList[index].repoTitle,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w500),
-                            ),
-                            const SizedBox(
-                              height: 5,
-                            ),
-                            Text(
-                              dataList[index].repoDesc,
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 2,
-                              style: const TextStyle(color: Colors.grey),
-                            ),
-                            const SizedBox(
-                              height: 5,
-                            ),
-                            Row(
-                              children: [
-                                dataList[index].language != ''
-                                    ? BottomIcons(
-                                        icon: Icons.code,
-                                        text: dataList[index].language)
-                                    : Container(),
-                                BottomIcons(
-                                    icon: Icons.bug_report,
-                                    text:
-                                        dataList[index].openIssues.toString()),
-                                BottomIcons(
-                                    icon: Icons.face_sharp,
-                                    text: dataList[index]
-                                        .watchersCount
-                                        .toString()),
-                              ],
-                            )
-                          ],
-                        ),
-                      )
-                    ],
-                  ),
-                  const Divider(
-                    height: 3,
-                    thickness: 2,
-                  ),
-                ],
-              ),
+            return InfoTile(
+              title: dataList[index].repoTitle,
+              description: dataList[index].repoDesc,
+              language: dataList[index].language,
+              openIssues: dataList[index].openIssues.toString(),
+              watchersCount: dataList[index].watchersCount.toString(),
             );
           },
         ));
-  }
-}
-
-class BottomIcons extends StatelessWidget {
-  const BottomIcons({Key? key, required this.icon, required this.text})
-      : super(key: key);
-  final IconData icon;
-  final String text;
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon),
-        const SizedBox(
-          width: 5,
-        ),
-        Text(
-          text,
-        ),
-        const SizedBox(
-          width: 10,
-        ),
-      ],
-    );
   }
 }
