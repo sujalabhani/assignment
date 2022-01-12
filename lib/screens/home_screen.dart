@@ -1,9 +1,10 @@
 import 'dart:convert';
-import 'package:lazy_load_scrollview/lazy_load_scrollview.dart';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:assignment/model/version_control.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http/http.dart' as http;
 
 class HomeScreen extends StatefulWidget {
@@ -14,40 +15,74 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  late ScrollController scrollController;
   final httpClient = http.Client();
-  late Future<List<VersionController>> futureData;
   int countOfRequest = 0;
-  List<VersionController> dataList = [];
-
+  List<VersionControl> dataList = [];
   bool _loading = false;
+  late final Box hiveBox;
+  late ConnectivityResult connectivityResult;
   @override
   void initState() {
     super.initState();
-    scrollController = ScrollController()..addListener(_scrollListener);
-    getData();
+    checkConnectivity();
+    WidgetsBinding.instance!.addPostFrameCallback((timeStamp) async {
+      hiveBox = await Hive.openBox('localData');
+
+      Connectivity().checkConnectivity().then((value) {
+        connectivityResult = value;
+        if (value == ConnectivityResult.none) {
+          if (hiveBox.isNotEmpty) {
+            parseJson(hiveBox.getAt(0) as String);
+            setState(() {});
+          }
+          showSnackBar('Connect To Internet To Get Latest Data');
+        }
+      });
+    });
   }
 
-  void _scrollListener() async {
-    // if (scrollController.position.extentAfter < 500) {
-    //   await getData();
-    // }
+  Future checkConnectivity() async {
+    Connectivity().onConnectivityChanged.listen((event) async {
+      connectivityResult = event;
+      if (event != ConnectivityResult.none) {
+        showSnackBar('Connected to Internet');
+
+        getData();
+      } else {
+        if (hiveBox.isNotEmpty) {
+          parseJson(hiveBox.get('jsonData') as String);
+        }
+        showSnackBar('Connect To Internet To Get Latest Data');
+      }
+    });
   }
-  inverseLoading() {
-    _loading = !_loading;
+
+  void showSnackBar(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> getData() async {
-    inverseLoading();
+    _loading = !_loading;
     countOfRequest += 10;
     final response = await httpClient.get(Uri.parse(
         'https://api.github.com/users/JakeWharton/repos?page=1&per_page=$countOfRequest'));
-    print(response.body);
-    final data = json.decode(response.body) as List<dynamic>;
-    dataList
-        .addAll(data.map((item) => VersionController.fromJson(item)).toList());
-    inverseLoading();
+    parseJson(response.body);
+    hiveBox.put('jsonData', response.body);
+    _loading = !_loading;
     setState(() {});
+  }
+
+  void parseJson(String jsonData) {
+    final data = json.decode(jsonData) as List<dynamic>;
+    if (dataList.isEmpty) {
+      dataList
+          .addAll(data.map((item) => VersionControl.fromJson(item)).toList());
+    } else {
+      List<VersionControl> filteredList =
+          data.map((item) => VersionControl.fromJson(item)).toList();
+      filteredList.removeRange(0, dataList.length);
+      dataList.addAll(filteredList);
+    }
   }
 
   @override
@@ -55,17 +90,21 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
         appBar: AppBar(
           systemOverlayStyle: SystemUiOverlayStyle.light,
-          backgroundColor: Colors.grey,
-          title: const Text('Assignment'),
+          title: const Text(
+            'Assignment',
+            style: const TextStyle(color: Colors.white),
+          ),
         ),
         body: ListView.builder(
           itemCount: _loading ? dataList.length + 1 : dataList.length,
           itemBuilder: (context, index) {
-            if (index >= dataList.length - 1) {
+            if (index >= dataList.length - 1 &&
+                connectivityResult != ConnectivityResult.none) {
               if (!_loading) {
                 getData();
               }
-              return Center(
+
+              return const Center(
                 child: CircularProgressIndicator(),
               );
             }
